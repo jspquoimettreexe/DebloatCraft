@@ -17,6 +17,7 @@ navigation?.querySelectorAll("a").forEach((link) => {
 });
 
 const configuredInstallerUrl = document.documentElement.dataset.installerUrl?.trim();
+const configuredLinuxInstallerUrl = document.documentElement.dataset.linuxInstallerUrl?.trim();
 const isGitHubPages = location.hostname.endsWith(".github.io");
 const pagesProject = isGitHubPages
   ? location.pathname.split("/").filter(Boolean)[0]
@@ -28,14 +29,23 @@ const releaseRepository = pagesProject || (pagesOwner ? `${pagesOwner}.github.io
 const installerUrl = configuredInstallerUrl || (pagesOwner && releaseRepository
   ? `https://github.com/${pagesOwner}/${releaseRepository}/releases/latest/download/DebloatCraft.exe`
   : "");
-const downloadState = document.querySelector("#download-state");
+const linuxInstallerUrl = configuredLinuxInstallerUrl || (pagesOwner && releaseRepository
+  ? `https://github.com/${pagesOwner}/${releaseRepository}/releases/latest/download/DebloatCraft`
+  : "");
 
-document.querySelectorAll("[data-installer]").forEach((link) => {
-  if (!installerUrl) return;
-  link.href = installerUrl;
+document.querySelectorAll("[data-installer-platform]").forEach((link) => {
+  const isLinux = link.dataset.installerPlatform === "linux";
+  const url = isLinux ? linuxInstallerUrl : installerUrl;
+  const downloadState = document.querySelector(isLinux ? "#linux-download-state" : "#download-state");
+  if (!url) return;
+  link.href = url;
   link.removeAttribute("aria-disabled");
   link.removeAttribute("tabindex");
-  if (downloadState) downloadState.textContent = "Téléchargement direct, gratuit. Windows demandera ton autorisation avant l'application.";
+  if (downloadState) {
+    downloadState.textContent = isLinux
+      ? "Binaire Linux x86-64 autonome, téléchargement gratuit."
+      : "Téléchargement direct, gratuit. Windows demandera ton autorisation avant l'application.";
+  }
 });
 
 if ("IntersectionObserver" in window && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {

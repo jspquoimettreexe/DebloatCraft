@@ -1,10 +1,11 @@
-"""DebloatCraft: GUI Windows for transparent, reversible PC adjustments."""
+"""DebloatCraft: desktop utility for transparent, user-selected PC maintenance."""
 
 from __future__ import annotations
 
 import ctypes
 import json
 import os
+import platform
 import subprocess
 import sys
 import shutil
@@ -15,6 +16,7 @@ from typing import Any
 
 
 APP_NAME = "DebloatCraft"
+IS_LINUX = sys.platform.startswith("linux")
 BG = "#0b1020"
 PANEL = "#111a31"
 PANEL_ALT = "#17213b"
@@ -79,7 +81,10 @@ REGISTRY_SETTINGS = {
 
 
 def config_path() -> Path:
-    base = Path(os.environ.get("APPDATA", Path.home()))
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home()))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return base / APP_NAME / "settings.json"
 
 
@@ -101,7 +106,7 @@ def save_config(config: dict[str, Any]) -> None:
 
 
 def is_admin() -> bool:
-    if os.name != "nt":
+    if IS_LINUX:
         return False
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -133,6 +138,66 @@ $disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Obj
     )
     data = json.loads(completed.stdout.strip())
     return data if isinstance(data, dict) else {}
+
+
+def run_linux_hardware_json() -> dict[str, Any]:
+    cpu = platform.processor().strip() or "Non détecté"
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            key, separator, value = line.partition(":")
+            value = value.strip()
+            if separator and key.strip().lower() in ("model name", "hardware") and value:
+                cpu = value
+                break
+            if (separator and key.strip().lower() == "processor" and value
+                    and not value.isdigit() and cpu == "Non détecté"):
+                cpu = value
+    except OSError:
+        pass
+
+    ram = None
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            if line.startswith("MemTotal:"):
+                ram = round(int(line.split()[1]) / 1024 / 1024)
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+
+    gpu = "Non détectée"
+    if shutil.which("lspci"):
+        try:
+            result = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5, check=False)
+            devices = [line.split(": ", 1)[-1] for line in result.stdout.splitlines()
+                       if "vga compatible controller" in line.lower()
+                       or "3d controller" in line.lower()
+                       or "display controller" in line.lower()]
+            if devices:
+                gpu = " / ".join(devices)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    try:
+        release = platform.freedesktop_os_release()
+        system = f"{release.get('PRETTY_NAME', 'Linux')} · {platform.release()}"
+    except (AttributeError, OSError):
+        system = f"Linux · {platform.release()}"
+
+    disks = []
+    checked_paths: set[str] = set()
+    for path in (Path("/"), Path.home()):
+        try:
+            resolved = str(path.resolve())
+            if resolved in checked_paths:
+                continue
+            checked_paths.add(resolved)
+            usage = shutil.disk_usage(path)
+            disks.append({"name": resolved, "size": round(usage.total / 1024**3),
+                          "free": round(usage.free / 1024**3)})
+        except OSError:
+            continue
+
+    return {"cpu": cpu, "gpu": gpu, "ram": ram, "windows": system, "version": "", "disks": disks}
 
 
 def registry_root(root_name: str) -> Any:
@@ -177,6 +242,35 @@ def restore_registry_value(root_name: str, key_path: str, value_name: str, exist
 
 
 def installed_programs() -> list[dict[str, str]]:
+    if os.name != "nt":
+        commands = []
+        if shutil.which("dpkg-query"):
+            commands.append(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\n"])
+        elif shutil.which("rpm"):
+            commands.append(["rpm", "-qa", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n"])
+        elif shutil.which("pacman"):
+            commands.append(["pacman", "-Q"])
+        programs: dict[str, dict[str, str]] = {}
+        for command in commands:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    name, separator, version = line.partition("\t")
+                    if not separator:
+                        name, separator, version = line.partition(" ")
+                    if separator and name:
+                        programs[name.casefold()] = {"name": name, "version": version, "publisher": ""}
+                break
+        if shutil.which("flatpak"):
+            result = subprocess.run(["flatpak", "list", "--app", "--columns=application,version"],
+                                    capture_output=True, text=True, timeout=30, check=False)
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    name, _, version = line.partition("\t")
+                    if name:
+                        programs.setdefault(name.casefold(), {"name": name, "version": version, "publisher": "Flatpak"})
+        return sorted(programs.values(), key=lambda item: item["name"].casefold())
+
     import winreg
 
     locations = [
@@ -306,9 +400,10 @@ class DebloatCraftApp(tk.Tk):
                  font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=22, pady=(0, 10))
         self.nav_buttons: dict[str, tk.Button] = {}
         pages = [
-            ("Vue d'ensemble", "⌂"), ("Optimisation Windows", "◈"),
+            ("Vue d'ensemble", "⌂"), ("Optimisation Windows" if os.name == "nt" else "Réglages Linux", "◈"),
             ("Stockage", "▤"), ("Applications", "▦"),
-            ("Apparence Windows", "◉"), ("Profils de jeux", "◇"), ("Quiz couleurs", "✳"),
+            ("Apparence Windows" if os.name == "nt" else "Apparence de l'outil", "◉"),
+            ("Profils de jeux", "◇"), ("Quiz couleurs", "✳"),
         ]
         for name, icon in pages:
             button = tk.Button(
@@ -325,7 +420,7 @@ class DebloatCraftApp(tk.Tk):
                  font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=22, pady=(0, 9))
         self.admin_label = tk.Label(
             self.sidebar,
-            text="●  Administrateur" if is_admin() else "●  Mode lecture seule",
+            text=("●  Administrateur" if is_admin() else "●  Mode lecture seule") if os.name == "nt" else "●  Mode lecture seule",
             fg=GREEN if is_admin() else ORANGE, bg="#0e1529", font=("Segoe UI", 9),
         )
         self.admin_label.pack(anchor="w", padx=22)
@@ -359,7 +454,7 @@ class DebloatCraftApp(tk.Tk):
                                 font=("Segoe UI Semibold", 17))
         self.header.create_text(25, 55, text="SCAN LOCAL  ·  RÉGLAGES AU CHOIX  ·  GRATUIT",
                                 anchor="w", fill="#e6eaff", font=("Segoe UI", 8))
-        self.header.create_text(width - 22, height / 2, text="WINDOWS 10 / 11",
+        self.header.create_text(width - 22, height / 2, text="WINDOWS 10 / 11" if os.name == "nt" else "LINUX",
                                 anchor="e", fill="white", font=("Segoe UI Semibold", 9))
 
     def show_page(self, name: str) -> None:
@@ -372,13 +467,13 @@ class DebloatCraftApp(tk.Tk):
         self.page_content.grid_columnconfigure(0, weight=1)
         if name == "Vue d'ensemble":
             self._dashboard()
-        elif name == "Optimisation Windows":
+        elif name in ("Optimisation Windows", "Réglages Linux"):
             self._optimization_page()
         elif name == "Stockage":
             self._storage_page()
         elif name == "Applications":
             self._applications_page()
-        elif name == "Apparence Windows":
+        elif name in ("Apparence Windows", "Apparence de l'outil"):
             self._appearance_page()
         elif name == "Profils de jeux":
             self._profiles_page()
@@ -417,12 +512,13 @@ class DebloatCraftApp(tk.Tk):
                          activeforeground="white", font=("Segoe UI Semibold", 9), cursor="hand2")
 
     def _dashboard(self) -> None:
+        system_label = "Windows" if os.name == "nt" else "Système Linux"
         self._page_heading("Diagnostic · 01", "Vue d'ensemble",
                            "Analyse locale en lecture seule. Rien ne sera modifié par le scan.")
         actions = tk.Frame(self.page_content, bg=BG)
         actions.pack(fill="x", padx=30, pady=(0, 14))
         self._button(actions, "Scanner les composants", self.scan_hardware).pack(side="left")
-        tk.Label(actions, text="CPU · GPU · mémoire · Windows · disques", fg=MUTED,
+        tk.Label(actions, text=f"CPU · GPU · mémoire · {system_label} · disques", fg=MUTED,
                  bg=BG, font=("Segoe UI", 9)).pack(side="left", padx=14)
 
         grid = tk.Frame(self.page_content, bg=BG)
@@ -431,7 +527,7 @@ class DebloatCraftApp(tk.Tk):
             grid.grid_columnconfigure(column, weight=1, uniform="dashboard")
         cards = [
             ("Processeur", "cpu"), ("Carte graphique", "gpu"),
-            ("Mémoire vive", "ram"), ("Windows", "windows"),
+            ("Mémoire vive", "ram"), (system_label, "windows"),
         ]
         self.hardware_labels: dict[str, tk.Label] = {}
         for index, (label, key) in enumerate(cards):
@@ -454,7 +550,7 @@ class DebloatCraftApp(tk.Tk):
         self.status_var.set("Scan matériel en cours… aucune écriture système")
         self.update_idletasks()
         try:
-            self.hardware = run_powershell_json()
+            self.hardware = run_powershell_json() if os.name == "nt" else run_linux_hardware_json()
             values = {
                 "cpu": self.hardware.get("cpu") or "Non détecté",
                 "gpu": self.hardware.get("gpu") or "Non détectée",
@@ -476,7 +572,7 @@ class DebloatCraftApp(tk.Tk):
             self.status_var.set("Scan terminé · recommandations informatives, aucun changement appliqué")
         except Exception as exc:
             self.status_var.set("Scan impossible")
-            messagebox.showerror("Scan matériel", f"Le scan PowerShell a échoué.\n\n{exc}")
+            messagebox.showerror("Scan matériel", f"Le scan matériel a échoué.\n\n{exc}")
 
     def _update_recommendations(self) -> None:
         if not self.recommendation_label or not self.recommendation_label.winfo_exists() or not self.hardware:
@@ -484,7 +580,8 @@ class DebloatCraftApp(tk.Tk):
         suggestions: list[str] = []
         ram = self.hardware.get("ram")
         if isinstance(ram, (int, float)) and ram <= 8:
-            suggestions.append("Mémoire limitée: ferme les applications lourdes avant de jouer et conserve le fichier d'échange Windows activé.")
+            advice = "garde le fichier d'échange Windows activé" if os.name == "nt" else "ferme les applications lourdes avant de jouer"
+            suggestions.append(f"Mémoire limitée: {advice}.")
         elif isinstance(ram, (int, float)):
             suggestions.append(f"{ram:g} Go de mémoire détectés: évite les tweaks de pagination du noyau, qui n'apportent pas de gain universel.")
         gpu = str(self.hardware.get("gpu", "")).casefold()
@@ -501,6 +598,14 @@ class DebloatCraftApp(tk.Tk):
         self.recommendation_label.configure(text="\n\n".join(suggestions))
 
     def _optimization_page(self) -> None:
+        if os.name != "nt":
+            self._page_heading("Réglages · 02", "Réglages système",
+                               "DebloatCraft ne modifie pas automatiquement les services ou paramètres du système Linux.")
+            note = self._card(self.page_content, "Diagnostic sans risque", "Le scan et les conseils matériels restent disponibles sans droits administrateur.")
+            note.pack(fill="x", padx=30, pady=(0, 14))
+            tk.Label(note, text="Les réglages varient selon la distribution et le matériel. Aucun tweak noyau, service ou réseau n'est appliqué par cet outil.",
+                     bg=PANEL, fg=ORANGE, font=("Segoe UI", 9), wraplength=850, justify="left").pack(anchor="w", padx=18, pady=(0, 15))
+            return
         self._page_heading("Réglages · 02", "Optimisation Windows",
                            "Choisis les changements un par un. Les valeurs d'origine sont sauvegardées pour restauration.")
         warning = self._card(self.page_content, "Pas de réglage universel", "Le scan aide à comprendre ton PC, mais n'applique rien automatiquement.")
@@ -613,7 +718,8 @@ class DebloatCraftApp(tk.Tk):
         controls.pack(fill="x", padx=16, pady=(0, 16))
         self._button(controls, "Analyser", self.scan_storage).pack(side="left")
         self._button(controls, "Nettoyer la sélection", self.clean_storage, False).pack(side="left", padx=10)
-        self._button(controls, "Vider le cache DNS", self.flush_dns, False).pack(side="left")
+        if os.name == "nt":
+            self._button(controls, "Vider le cache DNS", self.flush_dns, False).pack(side="left")
         self.scan_storage()
 
     def scan_storage(self) -> None:
@@ -623,7 +729,13 @@ class DebloatCraftApp(tk.Tk):
         self.clean_paths = {}
         paths: dict[str, Path] = {}
         temp_path = Path(os.environ.get("TEMP", str(Path.home() / "AppData/Local/Temp")))
-        paths["Temp utilisateur"] = temp_path
+        if os.name == "nt":
+            paths["Temp utilisateur"] = temp_path
+        else:
+            cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+            for label, relative in (("Miniatures", "thumbnails"), ("Shaders Mesa", "mesa_shader_cache"),
+                                    ("Base shaders Mesa", "mesa_shader_cache_db")):
+                paths[f"Cache utilisateur · {label}"] = cache / relative
         local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
         epic_saved = local / "EpicGamesLauncher" / "Saved"
         try:
@@ -645,6 +757,9 @@ class DebloatCraftApp(tk.Tk):
 
     @staticmethod
     def _steam_roots() -> list[Path]:
+        if IS_LINUX:
+            candidates = [Path.home() / ".steam/steam", Path.home() / ".local/share/Steam"]
+            return list({str(path.resolve()): path for path in candidates if path.is_dir()}.values())
         import winreg
 
         roots: list[Path] = []
@@ -698,8 +813,11 @@ class DebloatCraftApp(tk.Tk):
             messagebox.showerror("Cache DNS", f"Impossible de vider le cache DNS.\n\n{exc}")
 
     def _applications_page(self) -> None:
-        self._page_heading("Logiciels · 04", "Applications installées", "Inventaire local des applications Win32. La désinstallation reste gérée par Windows.")
-        card = self._card(self.page_content, "Programmes détectés", "Sélectionne une ligne puis ouvre les paramètres d'applications Windows.")
+        linux = IS_LINUX
+        self._page_heading("Logiciels · 04", "Applications installées",
+                           "Inventaire local des paquets système et Flatpak." if linux else "Inventaire local des applications Win32. La désinstallation reste gérée par Windows.")
+        card = self._card(self.page_content, "Programmes détectés",
+                          "Inventaire en lecture seule; utilise le gestionnaire de ta distribution pour désinstaller." if linux else "Sélectionne une ligne puis ouvre les paramètres d'applications Windows.")
         card.pack(fill="both", expand=True, padx=30, pady=(0, 14))
         columns = ("name", "version", "publisher")
         self.program_tree = ttk.Treeview(card, columns=columns, show="headings", selectmode="browse")
@@ -710,8 +828,9 @@ class DebloatCraftApp(tk.Tk):
         bottom = tk.Frame(card, bg=PANEL)
         bottom.pack(fill="x", padx=16, pady=(0, 16))
         self._button(bottom, "Actualiser la liste", self.refresh_programs, False).pack(side="left")
-        self._button(bottom, "Ouvrir la désinstallation Windows", self.open_uninstall_settings).pack(side="left", padx=10)
-        tk.Label(bottom, text="Aucune suppression silencieuse", fg=GREEN, bg=PANEL,
+        if not linux:
+            self._button(bottom, "Ouvrir la désinstallation Windows", self.open_uninstall_settings).pack(side="left", padx=10)
+        tk.Label(bottom, text="Inventaire en lecture seule" if linux else "Aucune suppression silencieuse", fg=GREEN, bg=PANEL,
                  font=("Segoe UI", 9)).pack(side="right", padx=4)
         self.refresh_programs()
 
@@ -741,8 +860,10 @@ class DebloatCraftApp(tk.Tk):
             messagebox.showerror("Désinstallation Windows", f"Impossible d'ouvrir les paramètres.\n\n{exc}")
 
     def _appearance_page(self) -> None:
-        self._page_heading("Personnalisation · 05", "Apparence Windows", "Choisis une couleur d'accent et applique-la au thème Windows.")
-        card = self._card(self.page_content, "Couleurs rapides", "La modification concerne l'accent Windows du compte courant.")
+        linux = IS_LINUX
+        self._page_heading("Personnalisation · 05", "Apparence de l'outil" if linux else "Apparence Windows",
+                           "Choisis une couleur pour l'interface DebloatCraft." if linux else "Choisis une couleur d'accent et applique-la au thème Windows.")
+        card = self._card(self.page_content, "Couleurs rapides", "La modification concerne uniquement DebloatCraft." if linux else "La modification concerne l'accent Windows du compte courant.")
         card.pack(fill="x", padx=30, pady=(0, 16))
         swatches = tk.Frame(card, bg=PANEL)
         swatches.pack(anchor="w", padx=18, pady=(0, 14))
@@ -752,7 +873,8 @@ class DebloatCraftApp(tk.Tk):
         controls = tk.Frame(card, bg=PANEL)
         controls.pack(fill="x", padx=18, pady=(0, 18))
         self._button(controls, "Choisir une couleur…", self.choose_accent, False).pack(side="left")
-        self._button(controls, "Appliquer à Windows", self.apply_windows_accent).pack(side="left", padx=10)
+        if not linux:
+            self._button(controls, "Appliquer à Windows", self.apply_windows_accent).pack(side="left", padx=10)
         self.accent_preview = tk.Label(controls, text="   Aperçu   ", bg=self.accent, fg=accent_text_color(self.accent),
                                        font=("Segoe UI Semibold", 9), padx=10, pady=8)
         self.accent_preview.pack(side="right")
@@ -823,7 +945,8 @@ class DebloatCraftApp(tk.Tk):
             tk.Button(palette, bg=shade, activebackground=shade, width=3, height=1, bd=0,
                       command=lambda color=shade: self._choose_profile_color(color)).pack(side="left", padx=(0, 7))
         self._button(right, "Créer / mettre à jour", self.save_game_profile).pack(anchor="w", padx=18, pady=(0, 10))
-        self._button(right, "Appliquer la couleur à Windows", self.apply_selected_profile, False).pack(anchor="w", padx=18, pady=(0, 10))
+        apply_label = "Appliquer la couleur à Windows" if os.name == "nt" else "Appliquer à DebloatCraft"
+        self._button(right, apply_label, self.apply_selected_profile, False).pack(anchor="w", padx=18, pady=(0, 10))
         self._button(right, "Supprimer le profil", self.delete_game_profile, False).pack(anchor="w", padx=18, pady=(0, 18))
         self._refresh_profiles()
 
@@ -874,7 +997,10 @@ class DebloatCraftApp(tk.Tk):
                         if item["name"].casefold() == self.profile_name.get().strip().casefold()), None)
         if profile:
             self.select_accent(profile["color"])
-            self.apply_windows_accent()
+            if os.name == "nt":
+                self.apply_windows_accent()
+            else:
+                self.status_var.set(f"Couleur appliquée à DebloatCraft · {profile['color']}")
 
     def delete_game_profile(self) -> None:
         if not self.profile_box or not self.profile_box.curselection():
@@ -935,12 +1061,13 @@ class DebloatCraftApp(tk.Tk):
         self.header.configure(bg=BG)
         self._setup_styles()
         self.show_page("Vue d'ensemble")
-        messagebox.showinfo("Thème enregistré", f"Thème {answers[0]} enregistré. Accent: {chosen_accent}.\nTu peux aussi l'appliquer à Windows dans Apparence.")
+        destination = "Windows dans Apparence" if os.name == "nt" else "l'interface DebloatCraft"
+        messagebox.showinfo("Thème enregistré", f"Thème {answers[0]} enregistré. Accent: {chosen_accent}.\nTu peux aussi le modifier dans Apparence ({destination}).")
 
 
 def main() -> int:
-    if os.name != "nt":
-        print("DebloatCraft est une application Windows 10/11.", file=sys.stderr)
+    if os.name != "nt" and not IS_LINUX:
+        print("DebloatCraft prend en charge Windows et Linux.", file=sys.stderr)
         return 1
     try:
         app = DebloatCraftApp()

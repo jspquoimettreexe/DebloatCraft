@@ -107,6 +107,7 @@ h2 { margin: 0; font-size: 64px; line-height: .98; font-weight: 500; letter-spac
 .button-dark { color: white; background: var(--ink); }
 .button-dark span { color: var(--lime); }
 .button-dark[aria-disabled="true"] { opacity: .44; cursor: not-allowed; pointer-events: none; }
+.linux-download { margin-top: 12px; }
 .download-state { min-height: 36px; max-width: 390px; margin: 12px 0 14px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .source-link { color: var(--ink); text-decoration-thickness: 1px; text-underline-offset: 4px; font-size: 12px; }
 .source-link span { padding-left: 4px; color: var(--rust); }
