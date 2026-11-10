@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import platform
+import socket
 import subprocess
 import sys
 import shutil
@@ -23,26 +24,26 @@ except ImportError:
 APP_NAME = "DebloatCraft"
 IS_LINUX = sys.platform.startswith("linux")
 FONT_UI = "DejaVu Sans" if IS_LINUX else "Segoe UI"
-BG = "#f2f2f8"
-PANEL = "#ffffff"
-PANEL_ALT = "#e9e9f3"
-TEXT = "#211b35"
-MUTED = "#777287"
-BLUE = "#6656df"
-PURPLE = "#a64fe2"
-GREEN = "#198f72"
-ORANGE = "#c7771a"
-PALETTE = ["#5268e8", "#a64fe2", "#dd5894", "#e47a46", "#198f72", "#34334a"]
+BG = "#111116"
+PANEL = "#1a1a21"
+PANEL_ALT = "#25252e"
+TEXT = "#f5f4f8"
+MUTED = "#a09eaa"
+BLUE = "#5c6ee8"
+PURPLE = "#a45ce2"
+GREEN = "#55c78d"
+ORANGE = "#ff8b38"
+PALETTE = ["#5c6ee8", "#a45ce2", "#dd5894", "#ff8b38", "#55c78d", "#eeeaf6"]
 THEMES = {
-    "Noir profond": {"bg": "#17152a", "panel": "#211e38", "panel_alt": "#302b4c", "text": "#f7f5ff", "muted": "#b9b4cc"},
-    "Gris doux": {"bg": "#eeeef5", "panel": "#ffffff", "panel_alt": "#e5e5ef", "text": "#27233a", "muted": "#777287"},
+    "Noir profond": {"bg": "#111116", "panel": "#1a1a21", "panel_alt": "#25252e", "text": "#f5f4f8", "muted": "#a09eaa"},
+    "Gris doux": {"bg": "#22232b", "panel": "#2c2d36", "panel_alt": "#373843", "text": "#f1f0f5", "muted": "#b6b4c0"},
     "Blanc lumineux": {"bg": "#f5f6fb", "panel": "#ffffff", "panel_alt": "#ebedf5", "text": "#211b35", "muted": "#69677d"},
 }
 
 
 def set_theme_palette(mode: str, contrast: str = "Équilibré") -> str:
     global BG, PANEL, PANEL_ALT, TEXT, MUTED
-    selected = mode if mode in THEMES else "Blanc lumineux"
+    selected = mode if mode in THEMES else "Noir profond"
     palette = THEMES[selected]
     BG, PANEL, PANEL_ALT = palette["bg"], palette["panel"], palette["panel_alt"]
     TEXT, MUTED = palette["text"], palette["muted"]
@@ -437,13 +438,13 @@ class DebloatCraftApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("DebloatCraft | Réglages PC transparents")
-        self.geometry("1220x780")
-        self.minsize(1000, 680)
+        self.geometry("1220x700")
+        self.minsize(1020, 620)
         self.configure(bg=BG)
         self.config_data = load_config()
-        color_mode = self.config_data.get("color_mode", "Blanc lumineux")
-        if color_mode == "Noir profond" and not self.config_data.get("quiz_answers"):
-            color_mode = "Blanc lumineux"
+        color_mode = self.config_data.get("color_mode", "Noir profond")
+        if color_mode == "Blanc lumineux" and not self.config_data.get("quiz_answers"):
+            color_mode = "Noir profond"
         self.config_data["color_mode"] = set_theme_palette(
             color_mode,
             self.config_data.get("visual_preference", {}).get("contrast", "Équilibré"),
@@ -451,7 +452,7 @@ class DebloatCraftApp(tk.Tk):
         self.accent = self.config_data.get("accent", BLUE)
         if not isinstance(self.accent, str) or len(self.accent) != 7 or not self.accent.startswith("#"):
             self.accent = BLUE
-        self.current_page = "Vue d'ensemble"
+        self.current_page = "Accueil"
         self.hardware: dict[str, Any] | None = None
         self.vars: dict[str, tk.BooleanVar] = {}
         self.clean_paths: dict[str, Path] = {}
@@ -462,104 +463,154 @@ class DebloatCraftApp(tk.Tk):
         self.disk_tree: ttk.Treeview | None = None
         self.recommendation_label: tk.Label | None = None
         self.monitor_after_id: str | None = None
+        self.sidebar_after_id: str | None = None
         self.usage_widgets: dict[str, tuple[tk.Label, tk.Label, tk.Canvas]] = {}
         self.disk_usage_widgets: list[tuple[tk.Label, tk.Label, tk.Canvas]] = []
         self.process_tree: ttk.Treeview | None = None
+        self.sidebar_usage_widgets: dict[str, tuple[tk.Label, tk.Canvas]] = {}
+        self.usage_history: list[tuple[float, float]] = []
+        self.dashboard_metric_widgets: dict[str, tuple[tk.Label, tk.Label]] = {}
+        self.dashboard_chart: tk.Canvas | None = None
         self._setup_styles()
         self._build_shell()
-        self.show_page("Vue d'ensemble")
+        self.show_page("Accueil")
 
     def _setup_styles(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Treeview", background=PANEL, foreground=TEXT, fieldbackground=PANEL,
                 rowheight=30, borderwidth=0, font=(FONT_UI, 9))
-        style.configure("Treeview.Heading", background=PANEL_ALT, foreground="#514b68",
+        style.configure("Treeview.Heading", background=PANEL_ALT, foreground="#d2cfe0",
                 relief="flat", font=(FONT_UI, 8, "bold"))
-        style.map("Treeview", background=[("selected", "#dedbfa")], foreground=[("selected", TEXT)])
+        style.map("Treeview", background=[("selected", "#39314d")], foreground=[("selected", TEXT)])
         style.configure("TScrollbar", background=PANEL_ALT, troughcolor=BG, borderwidth=0)
 
     def _build_shell(self) -> None:
-        sidebar_bg = "#eeecf8"
-        self.sidebar = tk.Frame(self, bg=sidebar_bg, width=236,
-                                highlightthickness=1, highlightbackground="#e3e0ef")
+        sidebar_bg = "#0d0e12"
+        self.sidebar = tk.Frame(self, bg=sidebar_bg, width=194,
+                                highlightthickness=1, highlightbackground="#282830")
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
         brand = tk.Frame(self.sidebar, bg=sidebar_bg)
-        brand.pack(fill="x", padx=20, pady=(25, 30))
-        tk.Label(brand, text="D", fg="white", bg=PURPLE, font=(FONT_UI, 16, "bold"),
-                 width=2, height=1).pack(side="left", padx=(0, 11))
+        brand.pack(fill="x", padx=15, pady=(18, 22))
+        tk.Label(brand, text="D", fg="white", bg=PURPLE, font=(FONT_UI, 12, "bold"),
+                 width=2, height=1).pack(side="left", padx=(0, 8))
         title_box = tk.Frame(brand, bg=sidebar_bg)
         title_box.pack(side="left")
         tk.Label(title_box, text="DEBLOATCRAFT", fg=TEXT, bg=sidebar_bg,
-                 font=(FONT_UI, 10, "bold")).pack(anchor="w")
-        tk.Label(title_box, text="TON PC, TES RÈGLES", fg=MUTED, bg=sidebar_bg,
-                 font=(FONT_UI, 7)).pack(anchor="w", pady=(3, 0))
+                 font=(FONT_UI, 9, "bold")).pack(anchor="w")
+        tk.Label(title_box, text="PC CONTROL CENTER", fg="#77747f", bg=sidebar_bg,
+                 font=(FONT_UI, 6)).pack(anchor="w", pady=(2, 0))
 
-        tk.Label(self.sidebar, text="ESPACE DE TRAVAIL", fg="#79738f", bg=sidebar_bg,
-                 font=(FONT_UI, 8, "bold")).pack(anchor="w", padx=20, pady=(0, 10))
+        tk.Label(self.sidebar, text="ESPACE DE TRAVAIL", fg="#77747f", bg=sidebar_bg,
+                 font=(FONT_UI, 7, "bold")).pack(anchor="w", padx=15, pady=(0, 7))
         self.nav_buttons: dict[str, tk.Button] = {}
         pages = [
-            ("Vue d'ensemble", "⌂"), ("Optimisation Windows" if os.name == "nt" else "Réglages Linux", "◈"),
-            ("Performances", "◌"),
-            ("Stockage", "▤"), ("Applications", "▦"),
-            ("Apparence Windows" if os.name == "nt" else "Apparence de l'outil", "◉"),
-            ("Profils de jeux", "◇"), ("Quiz couleurs", "✳"),
+            ("Vue d'ensemble", "⌂"), ("Nettoyage", "◈"),
+            ("Stockage", "▤"), ("Protection", "◇"),
+            ("Applications", "▦"), ("Performances", "◌"),
+            ("Réseau", "⌁"), ("Santé du PC", "♡"),
+            ("Outils", "✳"), ("Paramètres", "⚙"),
         ]
         for name, icon in pages:
             button = tk.Button(
                 self.sidebar, text=f"  {icon}    {name}", anchor="w", bd=0,
-                padx=14, pady=10, bg=sidebar_bg, fg="#635d76",
-                activebackground="#dedaf5", activeforeground="#5b45bc",
-                font=(FONT_UI, 9), command=lambda page=name: self.show_page(page),
+                padx=9, pady=7, bg=sidebar_bg, fg="#b9b7c1",
+                activebackground="#292331", activeforeground="#e8b3ff",
+                font=(FONT_UI, 8), command=lambda page=name: self.show_page(page),
             )
-            button.pack(fill="x", padx=12, pady=2)
+            button.pack(fill="x", padx=7, pady=1)
             self.nav_buttons[name] = button
 
-        tk.Frame(self.sidebar, bg="#dcd8eb", height=1).pack(fill="x", padx=20, pady=18)
-        tk.Label(self.sidebar, text="SYSTÈME", fg="#79738f", bg=sidebar_bg,
-             font=(FONT_UI, 8, "bold")).pack(anchor="w", padx=20, pady=(0, 9))
+        tk.Frame(self.sidebar, bg="#292930", height=1).pack(fill="x", padx=14, pady=13)
+        live_heading = tk.Frame(self.sidebar, bg=sidebar_bg)
+        live_heading.pack(fill="x", padx=15, pady=(0, 7))
+        tk.Label(live_heading, text="EN DIRECT", fg="#c5c2cc", bg=sidebar_bg,
+                 font=(FONT_UI, 7, "bold")).pack(side="left")
+        tk.Label(live_heading, text="●", fg=GREEN, bg=sidebar_bg,
+                 font=(FONT_UI, 7)).pack(side="left", padx=5)
+        self.sidebar_usage_widgets = {}
+        for key, label, tint in (("cpu", "Processeur", ORANGE), ("memory", "Mémoire", BLUE),
+                                 ("gpu", "Carte graphique", PURPLE)):
+            block = tk.Frame(self.sidebar, bg=sidebar_bg)
+            block.pack(fill="x", padx=15, pady=(3, 6))
+            row = tk.Frame(block, bg=sidebar_bg)
+            row.pack(fill="x")
+            tk.Label(row, text=label, fg="#aaa7b2", bg=sidebar_bg,
+                     font=(FONT_UI, 7), anchor="w").pack(side="left")
+            value = tk.Label(row, text="--%", fg=tint, bg=sidebar_bg,
+                             font=(FONT_UI, 7, "bold"), anchor="e")
+            value.pack(side="right")
+            meter = tk.Canvas(block, height=5, bg=sidebar_bg, highlightthickness=0)
+            meter.pack(fill="x", pady=(4, 0))
+            self.sidebar_usage_widgets[key] = (value, meter)
+
         self.admin_label = tk.Label(
             self.sidebar,
             text=("●  Administrateur" if is_admin() else "●  Mode lecture seule") if os.name == "nt" else "●  Mode lecture seule",
-            fg=GREEN if is_admin() else ORANGE, bg=sidebar_bg, font=(FONT_UI, 8),
+            fg=GREEN if is_admin() else "#77747f", bg=sidebar_bg, font=(FONT_UI, 7),
         )
-        self.admin_label.pack(anchor="w", padx=22)
-        tk.Label(self.sidebar, text="GRATUIT · SANS COMPTE", fg="#89839a", bg=sidebar_bg,
-             font=(FONT_UI, 7)).pack(side="bottom", anchor="w", padx=20, pady=20)
+        self.admin_label.pack(side="bottom", anchor="w", padx=15, pady=12)
 
         self.workspace = tk.Frame(self, bg=BG)
         self.workspace.pack(side="left", fill="both", expand=True)
-        self.header = tk.Canvas(self.workspace, height=92, bg=BG, highlightthickness=0)
+        self.header = tk.Canvas(self.workspace, height=50, bg=BG, highlightthickness=0)
         self.header.pack(fill="x")
         self.header.bind("<Configure>", self._draw_gradient)
         self.page_content = tk.Frame(self.workspace, bg=BG)
         self.page_content.pack(fill="both", expand=True)
         self.status_var = tk.StringVar(value="Prêt · aucun réglage appliqué")
-        status_bar = tk.Frame(self.workspace, bg="#e9e7f2", height=34)
+        status_bar = tk.Frame(self.workspace, bg="#19191f", height=30)
         status_bar.pack(side="bottom", fill="x")
-        tk.Label(status_bar, textvariable=self.status_var, bg="#e9e7f2", fg=MUTED,
-             font=(FONT_UI, 8), anchor="w").pack(fill="both", padx=18)
+        tk.Label(status_bar, textvariable=self.status_var, bg="#19191f", fg=MUTED,
+             font=(FONT_UI, 7), anchor="w").pack(fill="both", padx=14)
+        self.sidebar_after_id = self.after(500, self._refresh_sidebar_metrics)
 
     def _draw_gradient(self, _event: Any = None) -> None:
         self.header.delete("all")
         width = max(self.header.winfo_width(), 2)
         height = max(self.header.winfo_height(), 2)
-        start = (164, 79, 226)
-        end = (77, 103, 232)
+        start = (103, 55, 162)
+        end = (50, 75, 156)
         for x in range(width):
             ratio = x / width
             rgb = tuple(round(start[i] * (1 - ratio) + end[i] * ratio) for i in range(3))
             self.header.create_line(x, 0, x, height, fill="#%02x%02x%02x" % rgb)
-        self.header.create_text(25, 31, text="DEBLOATCRAFT", anchor="w", fill="white",
-                    font=(FONT_UI, 17, "bold"))
-        self.header.create_text(27, 62, text="SCAN LOCAL  ·  RÉGLAGES AU CHOIX  ·  GRATUIT",
-                    anchor="w", fill="#f0eaff", font=(FONT_UI, 8))
-        self.header.create_text(width - 22, height / 2, text="WINDOWS 10 / 11" if os.name == "nt" else "LINUX",
-                    anchor="e", fill="white", font=(FONT_UI, 9, "bold"))
+        self.header.create_text(20, height / 2, text="DEBLOATCRAFT  /  PC CONTROL CENTER",
+                    anchor="w", fill="#f7f3ff", font=(FONT_UI, 9, "bold"))
+        self.header.create_text(width - 18, height / 2, text="WINDOWS 10 / 11" if os.name == "nt" else "LINUX",
+                    anchor="e", fill="#e2d9f3", font=(FONT_UI, 7, "bold"))
+
+    def _refresh_sidebar_metrics(self) -> None:
+        self.sidebar_after_id = None
+        if not self.winfo_exists():
+            return
+        try:
+            cpu = psutil.cpu_percent(None) if psutil else 0
+            memory = psutil.virtual_memory().percent if psutil else 0
+            gpu = read_gpu_usage() if psutil else None
+            values = {"cpu": cpu, "memory": memory, "gpu": gpu.get("percent") if gpu else None}
+            for key, percent in values.items():
+                widgets = self.sidebar_usage_widgets.get(key)
+                if widgets:
+                    value, meter = widgets
+                    value.configure(text=f"{percent:.0f}%" if percent is not None else "N/D")
+                    tint = ORANGE if key == "cpu" else BLUE if key == "memory" else PURPLE
+                    self._paint_meter(meter, percent or 0, tint)
+            if self.dashboard_metric_widgets:
+                self._update_dashboard_metrics(cpu, memory, gpu)
+            self.usage_history.append((cpu, memory))
+            self.usage_history = self.usage_history[-60:]
+            if self.dashboard_chart and self.dashboard_chart.winfo_exists():
+                self._draw_dashboard_chart()
+        except Exception:
+            pass
+        self.sidebar_after_id = self.after(1800, self._refresh_sidebar_metrics)
 
     def show_page(self, name: str) -> None:
+        if name == "Vue d'ensemble":
+            name = "Accueil"
         self.current_page = name
         if self.monitor_after_id:
             self.after_cancel(self.monitor_after_id)
@@ -567,34 +618,40 @@ class DebloatCraftApp(tk.Tk):
         self.usage_widgets = {}
         self.disk_usage_widgets = []
         self.process_tree = None
+        self.dashboard_metric_widgets = {}
+        self.dashboard_chart = None
         for page, button in self.nav_buttons.items():
             active = page == name
-            button.configure(bg="#ddd9f6" if active else "#eeecf8",
-                             fg="#5944b8" if active else "#635d76",
-                             font=(FONT_UI, 9, "bold" if active else "normal"))
+            button.configure(bg="#28232f" if active else "#0d0e12",
+                             fg="#e7c2ff" if active else "#b9b7c1",
+                             font=(FONT_UI, 8, "bold" if active else "normal"))
         for child in self.page_content.winfo_children():
             child.destroy()
         self.page_content.grid_columnconfigure(0, weight=1)
-        if name == "Vue d'ensemble":
+        if name in ("Vue d'ensemble", "Santé du PC"):
+            self._dashboard()
+        elif name == "Accueil":
             self._dashboard()
         elif name == "Performances":
             self._performance_page()
-        elif name in ("Optimisation Windows", "Réglages Linux"):
+        elif name == "Réseau":
+            self._network_page()
+        elif name in ("Optimisation Windows", "Réglages Linux", "Protection", "Réglages système"):
             self._optimization_page()
-        elif name == "Stockage":
+        elif name in ("Stockage", "Nettoyage", "Espace disque"):
             self._storage_page()
         elif name == "Applications":
             self._applications_page()
-        elif name in ("Apparence Windows", "Apparence de l'outil"):
+        elif name in ("Apparence Windows", "Apparence de l'outil", "Paramètres", "Apparence"):
             self._appearance_page()
-        elif name == "Profils de jeux":
+        elif name in ("Profils de jeux", "Outils"):
             self._profiles_page()
         elif name == "Quiz couleurs":
             self._quiz_page()
 
     def _page_heading(self, eyebrow: str, title: str, subtitle: str = "") -> tk.Frame:
         heading = tk.Frame(self.page_content, bg=BG)
-        heading.pack(fill="x", padx=30, pady=(24, 18))
+        heading.pack(fill="x", padx=24, pady=(18, 12))
         tk.Label(heading, text=eyebrow.upper(), fg=self.accent, bg=BG,
                  font=(FONT_UI, 9)).pack(anchor="w")
         tk.Label(heading, text=title, fg=TEXT, bg=BG,
@@ -605,7 +662,7 @@ class DebloatCraftApp(tk.Tk):
         return heading
 
     def _card(self, parent: tk.Widget, title: str, subtitle: str = "") -> tk.Frame:
-        card = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground="#e3e1ec")
+        card = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground="#2b2a33")
         if title or subtitle:
             heading = tk.Frame(card, bg=PANEL)
             heading.pack(fill="x", padx=18, pady=(15, 11))
@@ -618,46 +675,158 @@ class DebloatCraftApp(tk.Tk):
 
     def _button(self, parent: tk.Widget, text: str, command: Any, primary: bool = True) -> tk.Button:
         return tk.Button(parent, text=text, command=command, bd=0, padx=15, pady=9,
-                         bg=self.accent if primary else PANEL_ALT,
-                         fg=accent_text_color(self.accent) if primary else TEXT,
-                         activebackground=BLUE if primary else "#dad8e5",
-                         activeforeground="white" if primary else TEXT,
+                         bg=ORANGE if primary else PANEL_ALT,
+                         fg="#20130c" if primary else TEXT,
+                         activebackground="#ff9b4e" if primary else "#34323d",
+                         activeforeground="#20130c" if primary else TEXT,
                          font=(FONT_UI, 9), cursor="hand2")
 
     def _dashboard(self) -> None:
-        system_label = "Windows" if os.name == "nt" else "Système Linux"
-        self._page_heading("Diagnostic · 01", "Vue d'ensemble",
-                           "Analyse locale en lecture seule. Rien ne sera modifié par le scan.")
-        actions = tk.Frame(self.page_content, bg=BG)
-        actions.pack(fill="x", padx=30, pady=(0, 14))
-        self._button(actions, "Scanner les composants", self.scan_hardware).pack(side="left")
-        tk.Label(actions, text=f"CPU · GPU · mémoire · {system_label} · disques", fg=MUTED,
-                 bg=BG, font=(FONT_UI, 9)).pack(side="left", padx=14)
+        self.page_content.configure(bg=BG)
+        hero = tk.Frame(self.page_content, bg=PANEL, highlightthickness=1, highlightbackground="#2b2a33")
+        hero.pack(fill="x", padx=22, pady=(12, 9))
+        hero.grid_columnconfigure(1, weight=1)
 
-        grid = tk.Frame(self.page_content, bg=BG)
-        grid.pack(fill="both", expand=True, padx=30, pady=(0, 18))
-        for column in range(2):
-            grid.grid_columnconfigure(column, weight=1, uniform="dashboard")
-        cards = [
-            ("Processeur", "cpu"), ("Carte graphique", "gpu"),
-            ("Mémoire vive", "ram"), (system_label, "windows"),
-        ]
-        self.hardware_labels: dict[str, tk.Label] = {}
-        for index, (label, key) in enumerate(cards):
-            card = self._card(grid, label)
-            card.grid(row=index // 2, column=index % 2, sticky="nsew", padx=(0, 12) if index % 2 == 0 else (0, 0), pady=7)
-            value = tk.Label(card, text="À scanner", fg=TEXT, bg=PANEL,
-                             font=(FONT_UI, 13), wraplength=410, justify="left")
-            value.pack(anchor="w", padx=18, pady=(0, 17))
-            self.hardware_labels[key] = value
+        scan_canvas = tk.Canvas(hero, width=228, height=210, bg=PANEL, highlightthickness=0, cursor="hand2")
+        scan_canvas.grid(row=0, column=0, rowspan=2, padx=(14, 8), pady=10)
+        self._draw_scan_button(scan_canvas)
+        scan_canvas.bind("<Button-1>", lambda _event: self.scan_hardware())
+        scan_canvas.bind("<Enter>", lambda _event: scan_canvas.configure(cursor="hand2"))
 
-        disk_card = self._card(grid, "Stockage local", "Capacité et espace libre des disques détectés")
-        disk_card.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=7)
-        self.dashboard_disks = tk.Label(disk_card, text="À scanner", fg=MUTED, bg=PANEL,
-                                        font=(FONT_UI, 10), justify="left")
-        self.dashboard_disks.pack(anchor="w", padx=18, pady=(0, 17))
-        if self.hardware is None:
-            self.after(350, self.scan_hardware)
+        details = tk.Frame(hero, bg=PANEL)
+        details.grid(row=0, column=1, sticky="nsew", padx=(8, 24), pady=(21, 10))
+        badge = tk.Label(details, text="●  ANALYSE LOCALE · SANS MODIFICATION", fg="#ffc17b", bg="#34261c",
+                         font=(FONT_UI, 7, "bold"), padx=9, pady=5)
+        badge.pack(anchor="w", pady=(0, 9))
+        tk.Label(details, text="Ton PC, clair et sous contrôle.", fg=TEXT, bg=PANEL,
+                 font=(FONT_UI, 21, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(details, text="Un aperçu honnête de ta machine : composants, charge et stockage.\nAucun réglage n'est appliqué pendant l'analyse.",
+                 fg=MUTED, bg=PANEL, font=(FONT_UI, 8), justify="left", anchor="w").pack(anchor="w", pady=(7, 9))
+        tags = tk.Frame(details, bg=PANEL)
+        tags.pack(anchor="w", pady=(0, 10))
+        for label in ("CPU & mémoire", "Disques", "Processus", "100 % local"):
+            tk.Label(tags, text=f"  ◇  {label}  ", fg="#d2cddd", bg="#292832",
+                     font=(FONT_UI, 7), padx=3, pady=5).pack(side="left", padx=(0, 5))
+        actions = tk.Frame(details, bg=PANEL)
+        actions.pack(anchor="w")
+        self._button(actions, "Lancer le scan matériel   →", self.scan_hardware).pack(side="left")
+        self.scan_status_label = tk.Label(actions, text="Prêt à analyser", fg=MUTED, bg=PANEL,
+                                          font=(FONT_UI, 7))
+        self.scan_status_label.pack(side="left", padx=12)
+
+        summary = tk.Frame(self.page_content, bg=BG)
+        summary.pack(fill="x", padx=22, pady=(0, 9))
+        for column in range(4):
+            summary.grid_columnconfigure(column, weight=1, uniform="summary")
+        self.dashboard_metric_widgets = {}
+        metric_specs = (("cpu", "Processeur", ORANGE), ("memory", "Mémoire", BLUE),
+                        ("gpu", "Carte graphique", PURPLE), ("disk", "Espace libre", GREEN))
+        for column, (key, title, tint) in enumerate(metric_specs):
+            tile = tk.Frame(summary, bg=PANEL, highlightthickness=1, highlightbackground="#2b2a33")
+            tile.grid(row=0, column=column, sticky="nsew", padx=(0, 8) if column < 3 else 0)
+            heading = tk.Frame(tile, bg=PANEL)
+            heading.pack(fill="x", padx=12, pady=(10, 4))
+            tk.Label(heading, text=f"●  {title}", fg=tint, bg=PANEL,
+                     font=(FONT_UI, 7, "bold")).pack(side="left")
+            value = tk.Label(tile, text="--", fg=TEXT, bg=PANEL,
+                             font=(FONT_UI, 17, "bold"), anchor="w")
+            value.pack(fill="x", padx=13)
+            detail = tk.Label(tile, text="En attente des capteurs", fg=MUTED, bg=PANEL,
+                              font=(FONT_UI, 7), anchor="w")
+            detail.pack(fill="x", padx=13, pady=(1, 10))
+            self.dashboard_metric_widgets[key] = (value, detail)
+
+        lower = tk.Frame(self.page_content, bg=BG)
+        lower.pack(fill="both", expand=True, padx=22, pady=(0, 14))
+        lower.grid_columnconfigure(0, weight=7)
+        lower.grid_columnconfigure(1, weight=4)
+        lower.grid_rowconfigure(0, weight=1)
+
+        chart_card = self._card(lower, "Votre PC en direct", "Charge processeur et mémoire · dernières mesures")
+        chart_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        legend = tk.Frame(chart_card, bg=PANEL)
+        legend.pack(fill="x", padx=14, pady=(0, 3))
+        tk.Label(legend, text="● CPU", fg=ORANGE, bg=PANEL, font=(FONT_UI, 7, "bold")).pack(side="left")
+        tk.Label(legend, text="● MÉMOIRE", fg="#8e80ff", bg=PANEL,
+                 font=(FONT_UI, 7, "bold")).pack(side="left", padx=12)
+        self.dashboard_chart = tk.Canvas(chart_card, height=148, bg=PANEL, highlightthickness=0)
+        self.dashboard_chart.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self.dashboard_chart.bind("<Configure>", lambda _event: self._draw_dashboard_chart())
+
+        status_card = self._card(lower, "État du système", "Informations locales")
+        status_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.dashboard_status = tk.Frame(status_card, bg=PANEL)
+        self.dashboard_status.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+        system_name = platform.freedesktop_os_release().get("PRETTY_NAME", "Linux") if IS_LINUX else "Windows 10 / 11"
+        self._status_row(self.dashboard_status, "Système", system_name, BLUE)
+        self._status_row(self.dashboard_status, "Mode", "Lecture seule", GREEN)
+        self._status_row(self.dashboard_status, "GPU", "Capteur selon pilote", PURPLE)
+        self._status_row(self.dashboard_status, "Confidentialité", "Aucune collecte", ORANGE)
+
+    @staticmethod
+    def _status_row(parent: tk.Widget, label: str, value: str, color: str) -> None:
+        row = tk.Frame(parent, bg=PANEL)
+        row.pack(fill="x", pady=6)
+        tk.Label(row, text=f"●  {label}", fg=color, bg=PANEL,
+                 font=(FONT_UI, 7, "bold")).pack(side="left")
+        tk.Label(row, text=value, fg=MUTED, bg=PANEL, font=(FONT_UI, 7),
+                 anchor="e").pack(side="right")
+
+    def _draw_scan_button(self, canvas: tk.Canvas) -> None:
+        canvas.delete("all")
+        canvas.create_oval(19, 9, 209, 199, outline="#58351f", width=2)
+        canvas.create_oval(27, 17, 201, 191, outline="#80451e", width=2)
+        canvas.create_oval(37, 27, 191, 181, outline="#a8541e", width=3)
+        canvas.create_oval(50, 40, 178, 168, fill="#d65c18", outline="#ffac56", width=2)
+        canvas.create_oval(58, 48, 170, 160, fill="#ed7420", outline="#ffb568", width=2)
+        canvas.create_text(114, 81, text="⚡", fill="#fff1d9", font=(FONT_UI, 18, "bold"))
+        canvas.create_text(114, 108, text="ANALYSER", fill="white", font=(FONT_UI, 12, "bold"))
+        canvas.create_text(114, 128, text="SCAN LOCAL", fill="#ffe1be", font=(FONT_UI, 7))
+
+    def _update_dashboard_metrics(self, cpu: float, memory: float, gpu: dict[str, Any] | None) -> None:
+        if not self.dashboard_metric_widgets:
+            return
+        values = {
+            "cpu": (f"{cpu:.0f} %", f"{psutil.cpu_count() or 1} cœurs logiques" if psutil else ""),
+            "memory": (f"{memory:.0f} %", f"{format_bytes(psutil.virtual_memory().used)} / {format_bytes(psutil.virtual_memory().total)}" if psutil else ""),
+            "gpu": (f"{gpu['percent']:.0f} %", gpu["name"] if gpu else "Mesure non exposée par le pilote"),
+        }
+        if psutil:
+            disk = psutil.disk_usage(Path.home().anchor or "/")
+            values["disk"] = (format_bytes(disk.free), f"libres sur {format_bytes(disk.total)}")
+        else:
+            values["disk"] = ("N/D", "Capteur indisponible")
+        for key, (value, detail) in values.items():
+            widgets = self.dashboard_metric_widgets.get(key)
+            if widgets:
+                widgets[0].configure(text=value)
+                widgets[1].configure(text=detail)
+
+    def _draw_dashboard_chart(self) -> None:
+        canvas = self.dashboard_chart
+        if not canvas or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        width, height = max(canvas.winfo_width(), 2), max(canvas.winfo_height(), 2)
+        left, right, top, bottom = 8, width - 8, 8, height - 19
+        for level in range(0, 101, 25):
+            y = bottom - (bottom - top) * level / 100
+            canvas.create_line(left, y, right, y, fill="#303039", dash=(2, 4))
+            canvas.create_text(right - 2, y - 7, text=f"{level}%", anchor="e",
+                               fill="#77747f", font=(FONT_UI, 6))
+        if len(self.usage_history) < 2:
+            canvas.create_text(width / 2, height / 2, text="Collecte des premières mesures…",
+                               fill=MUTED, font=(FONT_UI, 8))
+            return
+        points_count = len(self.usage_history)
+        for index, (color, series_index) in enumerate(((ORANGE, 0), ("#8e80ff", 1))):
+            points = []
+            for point_index, sample in enumerate(self.usage_history):
+                x = left + (right - left) * point_index / max(points_count - 1, 1)
+                y = bottom - (bottom - top) * sample[series_index] / 100
+                points.extend((x, y))
+            if len(points) >= 4:
+                canvas.create_line(*points, fill=color, width=2, smooth=True, splinesteps=12)
 
     def _performance_page(self) -> None:
         self._page_heading("Système · temps réel", "Performances",
@@ -698,6 +867,41 @@ class DebloatCraftApp(tk.Tk):
                     continue
         self._refresh_performance()
 
+    def _network_page(self) -> None:
+        self._page_heading("Diagnostic · réseau", "Réseau",
+                           "Interfaces et compteurs locaux · aucune donnée n'est envoyée")
+        card = self._card(self.page_content, "Interfaces réseau", "État, adresse locale et trafic cumulé")
+        card.pack(fill="both", expand=True, padx=22, pady=(0, 18))
+        if psutil is None:
+            tk.Label(card, text="Le module psutil est nécessaire pour lire les interfaces réseau.",
+                     fg=MUTED, bg=PANEL, font=(FONT_UI, 9)).pack(anchor="w", padx=18, pady=(0, 18))
+            return
+
+        addresses = psutil.net_if_addrs()
+        statuses = psutil.net_if_stats()
+        counters = psutil.net_io_counters(pernic=True)
+        table = tk.Frame(card, bg=PANEL)
+        table.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        for column, title in enumerate(("INTERFACE", "ADRESSE LOCALE", "ÉTAT", "REÇU / ENVOYÉ")):
+            tk.Label(table, text=title, fg="#898491", bg=PANEL,
+                     font=(FONT_UI, 7, "bold"), anchor="w").grid(row=0, column=column, sticky="ew", padx=(0, 10), pady=(0, 8))
+        for column, weight in enumerate((2, 3, 1, 2)):
+            table.grid_columnconfigure(column, weight=weight, uniform=f"network-{column}")
+        for row_index, (name, entries) in enumerate(addresses.items(), start=1):
+            stats = statuses.get(name)
+            traffic = counters.get(name)
+            grid_row = row_index * 2 - 1
+            ipv4 = next((entry.address for entry in entries if entry.family == socket.AF_INET), "—")
+            state = "Connectée" if stats and stats.isup else "Inactive"
+            traffic_text = f"{format_bytes(traffic.bytes_recv)} / {format_bytes(traffic.bytes_sent)}" if traffic else "—"
+            values = (name, ipv4, state, traffic_text)
+            for column, value in enumerate(values):
+                tk.Label(table, text=value, fg=GREEN if column == 2 and state == "Connectée" else TEXT if column != 2 else MUTED,
+                         bg=PANEL, font=(FONT_UI, 8), anchor="w").grid(
+                             row=grid_row, column=column, sticky="ew", padx=(0, 10), pady=8,
+                         )
+            tk.Frame(table, bg="#2b2a33", height=1).grid(row=grid_row + 1, column=0, columnspan=4, sticky="ew")
+
     def _usage_card(self, parent: tk.Widget, key: str, title: str, color: str, column: int) -> None:
         card = self._card(parent, title)
         card.grid(row=0, column=column, sticky="nsew", padx=(0, 10) if column < 2 else 0)
@@ -722,7 +926,8 @@ class DebloatCraftApp(tk.Tk):
         width = max(canvas.winfo_width(), 2)
         height = max(canvas.winfo_height(), 8)
         radius = height // 2
-        canvas.create_rectangle(0, 0, width, height, fill="#eeedf4", outline="")
+        track = "#34323b" if BG != THEMES["Blanc lumineux"]["bg"] else "#eeedf4"
+        canvas.create_rectangle(0, 0, width, height, fill=track, outline="")
         fill_width = int(width * max(0, min(percent, 100)) / 100)
         if fill_width <= 0:
             return
@@ -813,31 +1018,21 @@ class DebloatCraftApp(tk.Tk):
             self._paint_meter(meter, disk["percent"], PURPLE)
 
     def scan_hardware(self) -> None:
-        self.status_var.set("Scan matériel en cours… aucune écriture système")
+        self.status_var.set("Analyse locale en cours… aucune écriture système")
+        if hasattr(self, "scan_status_label") and self.scan_status_label.winfo_exists():
+            self.scan_status_label.configure(text="Analyse en cours…")
         self.update_idletasks()
         try:
             self.hardware = run_powershell_json() if os.name == "nt" else run_linux_hardware_json()
-            values = {
-                "cpu": self.hardware.get("cpu") or "Non détecté",
-                "gpu": self.hardware.get("gpu") or "Non détectée",
-                "ram": f"{self.hardware.get('ram', '?')} Go",
-                "windows": f"{self.hardware.get('windows', 'Windows')} · {self.hardware.get('version', '')}",
-            }
-            for key, value in values.items():
-                label = self.hardware_labels.get(key)
-                if label and label.winfo_exists():
-                    label.configure(text=value)
-            disks = self.hardware.get("disks", [])
-            disk_text = "\n".join(
-                f"{disk.get('name', '?')}  ·  {disk.get('free', '?')} Go libres / {disk.get('size', '?')} Go"
-                for disk in disks
-            ) or "Aucun disque fixe détecté"
-            if hasattr(self, "dashboard_disks") and self.dashboard_disks.winfo_exists():
-                self.dashboard_disks.configure(text=disk_text)
+            ram = self.hardware.get("ram", "?")
+            if hasattr(self, "scan_status_label") and self.scan_status_label.winfo_exists():
+                self.scan_status_label.configure(text=f"Analyse terminée · {ram} Go détectés")
             self._update_recommendations()
-            self.status_var.set("Scan terminé · recommandations informatives, aucun changement appliqué")
+            self.status_var.set("Analyse terminée · recommandations informatives, aucun changement appliqué")
         except Exception as exc:
             self.status_var.set("Scan impossible")
+            if hasattr(self, "scan_status_label") and self.scan_status_label.winfo_exists():
+                self.scan_status_label.configure(text="Analyse impossible")
             messagebox.showerror("Scan matériel", f"Le scan matériel a échoué.\n\n{exc}")
 
     def _update_recommendations(self) -> None:
