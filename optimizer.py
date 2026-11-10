@@ -14,29 +14,35 @@ import tkinter as tk
 from tkinter import colorchooser, messagebox, ttk
 from typing import Any
 
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 
 APP_NAME = "DebloatCraft"
 IS_LINUX = sys.platform.startswith("linux")
-BG = "#0b1020"
-PANEL = "#111a31"
-PANEL_ALT = "#17213b"
-TEXT = "#f3f5ff"
-MUTED = "#a4aec9"
-BLUE = "#4ca5ff"
-PURPLE = "#9564ff"
-GREEN = "#65e6be"
-ORANGE = "#ffbd68"
-PALETTE = ["#4ca5ff", "#9564ff", "#ff5fa2", "#ff9b54", "#65e6be", "#f4f6ff"]
+FONT_UI = "DejaVu Sans" if IS_LINUX else "Segoe UI"
+BG = "#f2f2f8"
+PANEL = "#ffffff"
+PANEL_ALT = "#e9e9f3"
+TEXT = "#211b35"
+MUTED = "#777287"
+BLUE = "#6656df"
+PURPLE = "#a64fe2"
+GREEN = "#198f72"
+ORANGE = "#c7771a"
+PALETTE = ["#5268e8", "#a64fe2", "#dd5894", "#e47a46", "#198f72", "#34334a"]
 THEMES = {
-    "Noir profond": {"bg": "#0b1020", "panel": "#111a31", "panel_alt": "#17213b", "text": "#f3f5ff", "muted": "#a4aec9"},
-    "Gris doux": {"bg": "#171a22", "panel": "#222631", "panel_alt": "#303642", "text": "#f1f2f5", "muted": "#b3b8c5"},
-    "Blanc lumineux": {"bg": "#edf1f8", "panel": "#ffffff", "panel_alt": "#e2e8f2", "text": "#1a2030", "muted": "#59647a"},
+    "Noir profond": {"bg": "#17152a", "panel": "#211e38", "panel_alt": "#302b4c", "text": "#f7f5ff", "muted": "#b9b4cc"},
+    "Gris doux": {"bg": "#eeeef5", "panel": "#ffffff", "panel_alt": "#e5e5ef", "text": "#27233a", "muted": "#777287"},
+    "Blanc lumineux": {"bg": "#f5f6fb", "panel": "#ffffff", "panel_alt": "#ebedf5", "text": "#211b35", "muted": "#69677d"},
 }
 
 
 def set_theme_palette(mode: str, contrast: str = "Équilibré") -> str:
     global BG, PANEL, PANEL_ALT, TEXT, MUTED
-    selected = mode if mode in THEMES else "Noir profond"
+    selected = mode if mode in THEMES else "Blanc lumineux"
     palette = THEMES[selected]
     BG, PANEL, PANEL_ALT = palette["bg"], palette["panel"], palette["panel_alt"]
     TEXT, MUTED = palette["text"], palette["muted"]
@@ -341,16 +347,105 @@ def accent_text_color(shade: str) -> str:
     return "#11152b" if luminance > 0.179 else "#ffffff"
 
 
+def read_gpu_usage() -> dict[str, Any] | None:
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3, check=True,
+            )
+            devices = []
+            for line in result.stdout.splitlines():
+                name, usage, memory_used, memory_total = (part.strip() for part in line.split(",", 3))
+                devices.append({"name": name, "percent": float(usage),
+                                "memory_used": float(memory_used), "memory_total": float(memory_total)})
+            if devices:
+                return {
+                    "name": " / ".join(device["name"] for device in devices),
+                    "percent": sum(device["percent"] for device in devices) / len(devices),
+                    "memory_used": sum(device["memory_used"] for device in devices),
+                    "memory_total": sum(device["memory_total"] for device in devices),
+                }
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    busy_files = list(Path("/sys/class/drm").glob("card[0-9]/device/gpu_busy_percent"))
+    if not busy_files:
+        busy_files = list(Path("/sys/class/drm").glob("card[0-9]/device/gt/gt0/busy"))
+    usages = []
+    for path in busy_files:
+        try:
+            usages.append(float(path.read_text(encoding="ascii").strip()))
+        except (OSError, ValueError):
+            continue
+    if usages:
+        return {"name": "GPU", "percent": sum(usages) / len(usages),
+                "memory_used": None, "memory_total": None}
+    return None
+
+
+def read_system_usage() -> dict[str, Any]:
+    if psutil is None:
+        raise RuntimeError("Le module psutil est absent. Réinstalle la version récente de DebloatCraft.")
+
+    memory = psutil.virtual_memory()
+    mounts: list[dict[str, Any]] = []
+    seen_devices: set[str] = set()
+    for partition in psutil.disk_partitions(all=False):
+        if IS_LINUX and partition.fstype in {"squashfs", "tmpfs", "devtmpfs", "overlay", "proc", "sysfs", "cgroup2"}:
+            continue
+        if partition.device in seen_devices:
+            continue
+        try:
+            usage = psutil.disk_usage(partition.mountpoint)
+        except OSError:
+            continue
+        seen_devices.add(partition.device)
+        mounts.append({"name": partition.mountpoint, "percent": usage.percent,
+                       "used": usage.used, "total": usage.total})
+    if not mounts:
+        usage = psutil.disk_usage("/")
+        mounts.append({"name": "/", "percent": usage.percent, "used": usage.used, "total": usage.total})
+
+    processes = []
+    for process in psutil.process_iter(["pid", "name", "memory_percent"]):
+        try:
+            info = process.info
+            processes.append({"pid": info["pid"], "name": info.get("name") or "Processus",
+                              "cpu": process.cpu_percent(None), "memory": info.get("memory_percent") or 0})
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    processes.sort(key=lambda item: (item["cpu"], item["memory"]), reverse=True)
+
+    frequency = psutil.cpu_freq()
+    return {
+        "cpu": psutil.cpu_percent(None),
+        "cores": psutil.cpu_percent(None, percpu=True),
+        "cpu_count": psutil.cpu_count(logical=True) or 1,
+        "memory": memory.percent,
+        "memory_used": memory.used,
+        "memory_total": memory.total,
+        "gpu": read_gpu_usage(),
+        "disks": mounts[:6],
+        "processes": processes[:12],
+        "frequency": frequency.current if frequency else None,
+    }
+
+
 class DebloatCraftApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("DebloatCraft | Réglages PC transparents")
-        self.geometry("1180x790")
-        self.minsize(980, 680)
+        self.geometry("1220x780")
+        self.minsize(1000, 680)
         self.configure(bg=BG)
         self.config_data = load_config()
+        color_mode = self.config_data.get("color_mode", "Blanc lumineux")
+        if color_mode == "Noir profond" and not self.config_data.get("quiz_answers"):
+            color_mode = "Blanc lumineux"
         self.config_data["color_mode"] = set_theme_palette(
-            self.config_data.get("color_mode", "Noir profond"),
+            color_mode,
             self.config_data.get("visual_preference", {}).get("contrast", "Équilibré"),
         )
         self.accent = self.config_data.get("accent", BLUE)
@@ -366,6 +461,10 @@ class DebloatCraftApp(tk.Tk):
         self.program_tree: ttk.Treeview | None = None
         self.disk_tree: ttk.Treeview | None = None
         self.recommendation_label: tk.Label | None = None
+        self.monitor_after_id: str | None = None
+        self.usage_widgets: dict[str, tuple[tk.Label, tk.Label, tk.Canvas]] = {}
+        self.disk_usage_widgets: list[tuple[tk.Label, tk.Label, tk.Canvas]] = []
+        self.process_tree: ttk.Treeview | None = None
         self._setup_styles()
         self._build_shell()
         self.show_page("Vue d'ensemble")
@@ -374,33 +473,36 @@ class DebloatCraftApp(tk.Tk):
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Treeview", background=PANEL, foreground=TEXT, fieldbackground=PANEL,
-                        rowheight=32, borderwidth=0, font=("Segoe UI", 10))
-        style.configure("Treeview.Heading", background=PANEL_ALT, foreground=TEXT,
-                        relief="flat", font=("Segoe UI Semibold", 9))
-        style.map("Treeview", background=[("selected", "#303d66")], foreground=[("selected", TEXT)])
+                rowheight=30, borderwidth=0, font=(FONT_UI, 9))
+        style.configure("Treeview.Heading", background=PANEL_ALT, foreground="#514b68",
+                relief="flat", font=(FONT_UI, 8, "bold"))
+        style.map("Treeview", background=[("selected", "#dedbfa")], foreground=[("selected", TEXT)])
         style.configure("TScrollbar", background=PANEL_ALT, troughcolor=BG, borderwidth=0)
 
     def _build_shell(self) -> None:
-        self.sidebar = tk.Frame(self, bg="#0e1529", width=224)
+        sidebar_bg = "#eeecf8"
+        self.sidebar = tk.Frame(self, bg=sidebar_bg, width=236,
+                                highlightthickness=1, highlightbackground="#e3e0ef")
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
-        brand = tk.Frame(self.sidebar, bg="#0e1529")
-        brand.pack(fill="x", padx=22, pady=(24, 26))
-        tk.Label(brand, text="DC", fg=accent_text_color(self.accent), bg=self.accent, font=("Segoe UI Black", 15),
-                 width=3, height=1).pack(side="left", padx=(0, 10))
-        title_box = tk.Frame(brand, bg="#0e1529")
+        brand = tk.Frame(self.sidebar, bg=sidebar_bg)
+        brand.pack(fill="x", padx=20, pady=(25, 30))
+        tk.Label(brand, text="D", fg="white", bg=PURPLE, font=(FONT_UI, 16, "bold"),
+                 width=2, height=1).pack(side="left", padx=(0, 11))
+        title_box = tk.Frame(brand, bg=sidebar_bg)
         title_box.pack(side="left")
-        tk.Label(title_box, text="DEBLOATCRAFT", fg=TEXT, bg="#0e1529",
-                 font=("Segoe UI Semibold", 11)).pack(anchor="w")
-        tk.Label(title_box, text="FREE PC TOOL", fg=MUTED, bg="#0e1529",
-                 font=("Segoe UI", 8)).pack(anchor="w", pady=(2, 0))
+        tk.Label(title_box, text="DEBLOATCRAFT", fg=TEXT, bg=sidebar_bg,
+                 font=(FONT_UI, 10, "bold")).pack(anchor="w")
+        tk.Label(title_box, text="TON PC, TES RÈGLES", fg=MUTED, bg=sidebar_bg,
+                 font=(FONT_UI, 7)).pack(anchor="w", pady=(3, 0))
 
-        tk.Label(self.sidebar, text="ESPACE DE TRAVAIL", fg="#707c9c", bg="#0e1529",
-                 font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=22, pady=(0, 10))
+        tk.Label(self.sidebar, text="ESPACE DE TRAVAIL", fg="#79738f", bg=sidebar_bg,
+                 font=(FONT_UI, 8, "bold")).pack(anchor="w", padx=20, pady=(0, 10))
         self.nav_buttons: dict[str, tk.Button] = {}
         pages = [
             ("Vue d'ensemble", "⌂"), ("Optimisation Windows" if os.name == "nt" else "Réglages Linux", "◈"),
+            ("Performances", "◌"),
             ("Stockage", "▤"), ("Applications", "▦"),
             ("Apparence Windows" if os.name == "nt" else "Apparence de l'outil", "◉"),
             ("Profils de jeux", "◇"), ("Quiz couleurs", "✳"),
@@ -408,65 +510,75 @@ class DebloatCraftApp(tk.Tk):
         for name, icon in pages:
             button = tk.Button(
                 self.sidebar, text=f"  {icon}    {name}", anchor="w", bd=0,
-                padx=14, pady=11, bg="#0e1529", fg="#aab4cf",
-                activebackground="#202a46", activeforeground=TEXT,
-                font=("Segoe UI", 10), command=lambda page=name: self.show_page(page),
+                padx=14, pady=10, bg=sidebar_bg, fg="#635d76",
+                activebackground="#dedaf5", activeforeground="#5b45bc",
+                font=(FONT_UI, 9), command=lambda page=name: self.show_page(page),
             )
             button.pack(fill="x", padx=12, pady=2)
             self.nav_buttons[name] = button
 
-        tk.Frame(self.sidebar, bg="#26304b", height=1).pack(fill="x", padx=20, pady=18)
-        tk.Label(self.sidebar, text="SYSTÈME", fg="#707c9c", bg="#0e1529",
-                 font=("Segoe UI Semibold", 8)).pack(anchor="w", padx=22, pady=(0, 9))
+        tk.Frame(self.sidebar, bg="#dcd8eb", height=1).pack(fill="x", padx=20, pady=18)
+        tk.Label(self.sidebar, text="SYSTÈME", fg="#79738f", bg=sidebar_bg,
+             font=(FONT_UI, 8, "bold")).pack(anchor="w", padx=20, pady=(0, 9))
         self.admin_label = tk.Label(
             self.sidebar,
             text=("●  Administrateur" if is_admin() else "●  Mode lecture seule") if os.name == "nt" else "●  Mode lecture seule",
-            fg=GREEN if is_admin() else ORANGE, bg="#0e1529", font=("Segoe UI", 9),
+            fg=GREEN if is_admin() else ORANGE, bg=sidebar_bg, font=(FONT_UI, 8),
         )
         self.admin_label.pack(anchor="w", padx=22)
-        tk.Label(self.sidebar, text="GRATUIT · SANS COMPTE", fg="#727d9b", bg="#0e1529",
-                 font=("Segoe UI", 8)).pack(side="bottom", anchor="w", padx=22, pady=20)
+        tk.Label(self.sidebar, text="GRATUIT · SANS COMPTE", fg="#89839a", bg=sidebar_bg,
+             font=(FONT_UI, 7)).pack(side="bottom", anchor="w", padx=20, pady=20)
 
         self.workspace = tk.Frame(self, bg=BG)
         self.workspace.pack(side="left", fill="both", expand=True)
-        self.header = tk.Canvas(self.workspace, height=78, bg=BG, highlightthickness=0)
+        self.header = tk.Canvas(self.workspace, height=92, bg=BG, highlightthickness=0)
         self.header.pack(fill="x")
         self.header.bind("<Configure>", self._draw_gradient)
         self.page_content = tk.Frame(self.workspace, bg=BG)
         self.page_content.pack(fill="both", expand=True)
         self.status_var = tk.StringVar(value="Prêt · aucun réglage appliqué")
-        status_bar = tk.Frame(self.workspace, bg="#0e1529", height=34)
+        status_bar = tk.Frame(self.workspace, bg="#e9e7f2", height=34)
         status_bar.pack(side="bottom", fill="x")
-        tk.Label(status_bar, textvariable=self.status_var, bg="#0e1529", fg=MUTED,
-                 font=("Segoe UI", 9), anchor="w").pack(fill="both", padx=18)
+        tk.Label(status_bar, textvariable=self.status_var, bg="#e9e7f2", fg=MUTED,
+             font=(FONT_UI, 8), anchor="w").pack(fill="both", padx=18)
 
     def _draw_gradient(self, _event: Any = None) -> None:
         self.header.delete("all")
         width = max(self.header.winfo_width(), 2)
         height = max(self.header.winfo_height(), 2)
-        start = (76, 165, 255)
-        end = (149, 100, 255)
+        start = (164, 79, 226)
+        end = (77, 103, 232)
         for x in range(width):
             ratio = x / width
             rgb = tuple(round(start[i] * (1 - ratio) + end[i] * ratio) for i in range(3))
             self.header.create_line(x, 0, x, height, fill="#%02x%02x%02x" % rgb)
-        self.header.create_text(24, 27, text="CONTROL CENTER", anchor="w", fill="white",
-                                font=("Segoe UI Semibold", 17))
-        self.header.create_text(25, 55, text="SCAN LOCAL  ·  RÉGLAGES AU CHOIX  ·  GRATUIT",
-                                anchor="w", fill="#e6eaff", font=("Segoe UI", 8))
+        self.header.create_text(25, 31, text="DEBLOATCRAFT", anchor="w", fill="white",
+                    font=(FONT_UI, 17, "bold"))
+        self.header.create_text(27, 62, text="SCAN LOCAL  ·  RÉGLAGES AU CHOIX  ·  GRATUIT",
+                    anchor="w", fill="#f0eaff", font=(FONT_UI, 8))
         self.header.create_text(width - 22, height / 2, text="WINDOWS 10 / 11" if os.name == "nt" else "LINUX",
-                                anchor="e", fill="white", font=("Segoe UI Semibold", 9))
+                    anchor="e", fill="white", font=(FONT_UI, 9, "bold"))
 
     def show_page(self, name: str) -> None:
         self.current_page = name
+        if self.monitor_after_id:
+            self.after_cancel(self.monitor_after_id)
+            self.monitor_after_id = None
+        self.usage_widgets = {}
+        self.disk_usage_widgets = []
+        self.process_tree = None
         for page, button in self.nav_buttons.items():
-            button.configure(bg="#202a46" if page == name else "#0e1529",
-                             fg=TEXT if page == name else "#aab4cf")
+            active = page == name
+            button.configure(bg="#ddd9f6" if active else "#eeecf8",
+                             fg="#5944b8" if active else "#635d76",
+                             font=(FONT_UI, 9, "bold" if active else "normal"))
         for child in self.page_content.winfo_children():
             child.destroy()
         self.page_content.grid_columnconfigure(0, weight=1)
         if name == "Vue d'ensemble":
             self._dashboard()
+        elif name == "Performances":
+            self._performance_page()
         elif name in ("Optimisation Windows", "Réglages Linux"):
             self._optimization_page()
         elif name == "Stockage":
@@ -484,32 +596,33 @@ class DebloatCraftApp(tk.Tk):
         heading = tk.Frame(self.page_content, bg=BG)
         heading.pack(fill="x", padx=30, pady=(24, 18))
         tk.Label(heading, text=eyebrow.upper(), fg=self.accent, bg=BG,
-                 font=("Segoe UI Semibold", 9)).pack(anchor="w")
+                 font=(FONT_UI, 9)).pack(anchor="w")
         tk.Label(heading, text=title, fg=TEXT, bg=BG,
-                 font=("Segoe UI Semibold", 24)).pack(anchor="w", pady=(3, 0))
+                 font=(FONT_UI, 24)).pack(anchor="w", pady=(3, 0))
         if subtitle:
             tk.Label(heading, text=subtitle, fg=MUTED, bg=BG,
-                     font=("Segoe UI", 10)).pack(anchor="w", pady=(5, 0))
+                     font=(FONT_UI, 10)).pack(anchor="w", pady=(5, 0))
         return heading
 
     def _card(self, parent: tk.Widget, title: str, subtitle: str = "") -> tk.Frame:
-        card = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground="#252f4c")
+        card = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground="#e3e1ec")
         if title or subtitle:
             heading = tk.Frame(card, bg=PANEL)
             heading.pack(fill="x", padx=18, pady=(15, 11))
             tk.Label(heading, text=title, fg=TEXT, bg=PANEL,
-                     font=("Segoe UI Semibold", 11)).pack(anchor="w")
+                     font=(FONT_UI, 11)).pack(anchor="w")
             if subtitle:
                 tk.Label(heading, text=subtitle, fg=MUTED, bg=PANEL,
-                         font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
+                         font=(FONT_UI, 9)).pack(anchor="w", pady=(4, 0))
         return card
 
     def _button(self, parent: tk.Widget, text: str, command: Any, primary: bool = True) -> tk.Button:
         return tk.Button(parent, text=text, command=command, bd=0, padx=15, pady=9,
                          bg=self.accent if primary else PANEL_ALT,
                          fg=accent_text_color(self.accent) if primary else TEXT,
-                         activebackground=PURPLE if primary else "#283453",
-                         activeforeground="white", font=("Segoe UI Semibold", 9), cursor="hand2")
+                         activebackground=BLUE if primary else "#dad8e5",
+                         activeforeground="white" if primary else TEXT,
+                         font=(FONT_UI, 9), cursor="hand2")
 
     def _dashboard(self) -> None:
         system_label = "Windows" if os.name == "nt" else "Système Linux"
@@ -519,7 +632,7 @@ class DebloatCraftApp(tk.Tk):
         actions.pack(fill="x", padx=30, pady=(0, 14))
         self._button(actions, "Scanner les composants", self.scan_hardware).pack(side="left")
         tk.Label(actions, text=f"CPU · GPU · mémoire · {system_label} · disques", fg=MUTED,
-                 bg=BG, font=("Segoe UI", 9)).pack(side="left", padx=14)
+                 bg=BG, font=(FONT_UI, 9)).pack(side="left", padx=14)
 
         grid = tk.Frame(self.page_content, bg=BG)
         grid.pack(fill="both", expand=True, padx=30, pady=(0, 18))
@@ -534,17 +647,170 @@ class DebloatCraftApp(tk.Tk):
             card = self._card(grid, label)
             card.grid(row=index // 2, column=index % 2, sticky="nsew", padx=(0, 12) if index % 2 == 0 else (0, 0), pady=7)
             value = tk.Label(card, text="À scanner", fg=TEXT, bg=PANEL,
-                             font=("Segoe UI Semibold", 13), wraplength=410, justify="left")
+                             font=(FONT_UI, 13), wraplength=410, justify="left")
             value.pack(anchor="w", padx=18, pady=(0, 17))
             self.hardware_labels[key] = value
 
         disk_card = self._card(grid, "Stockage local", "Capacité et espace libre des disques détectés")
         disk_card.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=7)
         self.dashboard_disks = tk.Label(disk_card, text="À scanner", fg=MUTED, bg=PANEL,
-                                        font=("Segoe UI", 10), justify="left")
+                                        font=(FONT_UI, 10), justify="left")
         self.dashboard_disks.pack(anchor="w", padx=18, pady=(0, 17))
         if self.hardware is None:
             self.after(350, self.scan_hardware)
+
+    def _performance_page(self) -> None:
+        self._page_heading("Système · temps réel", "Performances",
+                           "Utilisation locale des ressources · actualisation chaque seconde")
+        metrics = tk.Frame(self.page_content, bg=BG)
+        metrics.pack(fill="x", padx=30, pady=(0, 14))
+        for column in range(3):
+            metrics.grid_columnconfigure(column, weight=1, uniform="performance")
+        self._usage_card(metrics, "cpu", "Processeur", PURPLE, 0)
+        self._usage_card(metrics, "memory", "Mémoire vive", BLUE, 1)
+        self._usage_card(metrics, "gpu", "Carte graphique", "#168a83", 2)
+
+        disks = self._card(self.page_content, "Stockage", "Espace occupé sur les volumes montés")
+        disks.pack(fill="x", padx=30, pady=(0, 14))
+        self.disk_usage_frame = tk.Frame(disks, bg=PANEL)
+        self.disk_usage_frame.pack(fill="x", padx=18, pady=(0, 16))
+
+        process_card = self._card(self.page_content, "Processus actifs", "Triés selon leur utilisation CPU · valeurs indicatives")
+        process_card.pack(fill="both", expand=True, padx=30, pady=(0, 18))
+        self.process_tree = ttk.Treeview(
+            process_card, columns=("name", "pid", "cpu", "memory"), show="headings", height=7,
+        )
+        for column, heading, width, anchor in (
+            ("name", "PROCESSUS", 340, "w"), ("pid", "PID", 70, "e"),
+            ("cpu", "CPU", 80, "e"), ("memory", "MÉMOIRE", 110, "e"),
+        ):
+            self.process_tree.heading(column, text=heading)
+            self.process_tree.column(column, width=width, anchor=anchor, stretch=column == "name")
+        self.process_tree.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+
+        if psutil is not None:
+            psutil.cpu_percent(None)
+            psutil.cpu_percent(None, percpu=True)
+            for process in psutil.process_iter():
+                try:
+                    process.cpu_percent(None)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        self._refresh_performance()
+
+    def _usage_card(self, parent: tk.Widget, key: str, title: str, color: str, column: int) -> None:
+        card = self._card(parent, title)
+        card.grid(row=0, column=column, sticky="nsew", padx=(0, 10) if column < 2 else 0)
+        line = tk.Frame(card, bg=PANEL)
+        line.pack(fill="x", padx=17, pady=(0, 7))
+        value = tk.Label(line, text="--%", fg=TEXT, bg=PANEL,
+                         font=(FONT_UI, 22, "bold"))
+        value.pack(side="left")
+        detail = tk.Label(card, text="Lecture des capteurs…", fg=MUTED, bg=PANEL,
+                          font=(FONT_UI, 8), anchor="w")
+        detail.pack(fill="x", padx=18, pady=(0, 12))
+        meter = tk.Canvas(card, height=12, bg=PANEL, highlightthickness=0)
+        meter.pack(fill="x", padx=18, pady=(0, 17))
+        self.usage_widgets[key] = (value, detail, meter)
+        meter.bind("<Configure>", lambda _event, canvas=meter, shade=color: self._paint_meter(canvas, 0, shade))
+
+    @staticmethod
+    def _paint_meter(canvas: tk.Canvas, percent: float, color: str) -> None:
+        if not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 2)
+        height = max(canvas.winfo_height(), 8)
+        radius = height // 2
+        canvas.create_rectangle(0, 0, width, height, fill="#eeedf4", outline="")
+        fill_width = int(width * max(0, min(percent, 100)) / 100)
+        if fill_width <= 0:
+            return
+        red, green, blue = (int(color[index:index + 2], 16) for index in (1, 3, 5))
+        end = (77, 103, 232)
+        segments = min(48, fill_width)
+        for segment in range(segments):
+            ratio = segment / max(segments - 1, 1)
+            shade = "#%02x%02x%02x" % tuple(
+                round(start * (1 - ratio) + finish * ratio)
+                for start, finish in zip((red, green, blue), end)
+            )
+            left = segment * fill_width / segments
+            right = (segment + 1) * fill_width / segments + 1
+            canvas.create_rectangle(left, 1, right, height - 1, fill=shade, outline="")
+        if fill_width > radius:
+            canvas.create_oval(fill_width - height, 1, fill_width, height - 1,
+                               fill="#4d67e8", outline="")
+
+    def _refresh_performance(self) -> None:
+        self.monitor_after_id = None
+        if self.current_page != "Performances":
+            return
+        try:
+            data = read_system_usage()
+            cores = data["cpu_count"]
+            frequency = data.get("frequency")
+            cpu_detail = f"{cores} cœurs logiques"
+            if frequency:
+                cpu_detail += f" · {frequency / 1000:.1f} GHz"
+            self._update_usage_card("cpu", data["cpu"], cpu_detail, PURPLE)
+            self._update_usage_card(
+                "memory", data["memory"],
+                f"{format_bytes(data['memory_used'])} utilisés sur {format_bytes(data['memory_total'])}", BLUE,
+            )
+            gpu = data.get("gpu")
+            if gpu:
+                gpu_detail = gpu["name"]
+                if gpu.get("memory_total"):
+                    gpu_detail += f" · {gpu['memory_used']:.0f} / {gpu['memory_total']:.0f} Mio VRAM"
+                self._update_usage_card("gpu", gpu["percent"], gpu_detail, "#168a83")
+            else:
+                self._update_usage_card("gpu", None, "Mesure indisponible avec ce pilote", "#168a83")
+
+            self._update_disk_usage(data["disks"])
+            if self.process_tree and self.process_tree.winfo_exists():
+                self.process_tree.delete(*self.process_tree.get_children())
+                for process in data["processes"]:
+                    self.process_tree.insert("", "end", values=(
+                        process["name"], process["pid"], f"{process['cpu'] / cores:.1f} %",
+                        f"{process['memory']:.1f} %",
+                    ))
+            self.status_var.set(f"Mesures actualisées · {cores} cœurs · aucune modification système")
+        except Exception as exc:
+            self.status_var.set(f"Mesure indisponible · {exc}")
+        self.monitor_after_id = self.after(1000, self._refresh_performance)
+
+    def _update_usage_card(self, key: str, percent: float | None, detail: str, color: str) -> None:
+        widgets = self.usage_widgets.get(key)
+        if not widgets:
+            return
+        value, description, meter = widgets
+        value.configure(text=f"{percent:.0f}%" if percent is not None else "--%")
+        description.configure(text=detail)
+        self._paint_meter(meter, percent or 0, color)
+
+    def _update_disk_usage(self, disks: list[dict[str, Any]]) -> None:
+        if not self.disk_usage_widgets:
+            for index, disk in enumerate(disks):
+                row, column = divmod(index, 2)
+                cell = tk.Frame(self.disk_usage_frame, bg=PANEL)
+                cell.grid(row=row, column=column, sticky="ew", padx=(0, 24) if column == 0 else 0, pady=5)
+                self.disk_usage_frame.grid_columnconfigure(column, weight=1, uniform="disk-usage")
+                title = tk.Label(cell, text=disk["name"], fg=TEXT, bg=PANEL,
+                                 font=(FONT_UI, 8, "bold"), anchor="w")
+                title.grid(row=0, column=0, sticky="w")
+                value = tk.Label(cell, text="--%", fg=MUTED, bg=PANEL,
+                                 font=(FONT_UI, 8), anchor="e")
+                value.grid(row=0, column=1, sticky="e")
+                meter = tk.Canvas(cell, height=8, bg=PANEL, highlightthickness=0)
+                meter.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+                cell.grid_columnconfigure(0, weight=1)
+                self.disk_usage_widgets.append((title, value, meter))
+        for widgets, disk in zip(self.disk_usage_widgets, disks):
+            title, value, meter = widgets
+            title.configure(text=disk["name"])
+            value.configure(text=f"{disk['percent']:.0f}% · {format_bytes(disk['used'])}/{format_bytes(disk['total'])}")
+            self._paint_meter(meter, disk["percent"], PURPLE)
 
     def scan_hardware(self) -> None:
         self.status_var.set("Scan matériel en cours… aucune écriture système")
@@ -604,14 +870,14 @@ class DebloatCraftApp(tk.Tk):
             note = self._card(self.page_content, "Diagnostic sans risque", "Le scan et les conseils matériels restent disponibles sans droits administrateur.")
             note.pack(fill="x", padx=30, pady=(0, 14))
             tk.Label(note, text="Les réglages varient selon la distribution et le matériel. Aucun tweak noyau, service ou réseau n'est appliqué par cet outil.",
-                     bg=PANEL, fg=ORANGE, font=("Segoe UI", 9), wraplength=850, justify="left").pack(anchor="w", padx=18, pady=(0, 15))
+                     bg=PANEL, fg=ORANGE, font=(FONT_UI, 9), wraplength=850, justify="left").pack(anchor="w", padx=18, pady=(0, 15))
             return
         self._page_heading("Réglages · 02", "Optimisation Windows",
                            "Choisis les changements un par un. Les valeurs d'origine sont sauvegardées pour restauration.")
         warning = self._card(self.page_content, "Pas de réglage universel", "Le scan aide à comprendre ton PC, mais n'applique rien automatiquement.")
         warning.pack(fill="x", padx=30, pady=(0, 14))
         tk.Label(warning, text="Les tweaks TCP, la désactivation de services et la pagination du noyau sont exclus: leurs effets sont variables et parfois négatifs.",
-                 bg=PANEL, fg=ORANGE, font=("Segoe UI", 9), wraplength=850, justify="left").pack(anchor="w", padx=18, pady=(0, 15))
+                 bg=PANEL, fg=ORANGE, font=(FONT_UI, 9), wraplength=850, justify="left").pack(anchor="w", padx=18, pady=(0, 15))
 
         choices = self._card(self.page_content, "Réglages disponibles")
         choices.pack(fill="x", padx=30, pady=(0, 16))
@@ -623,22 +889,22 @@ class DebloatCraftApp(tk.Tk):
             self.vars[key] = variable
             tk.Checkbutton(row, variable=variable, text=item["label"], bg=PANEL, fg=TEXT,
                            activebackground=PANEL, activeforeground=TEXT, selectcolor=PANEL_ALT,
-                           font=("Segoe UI Semibold", 10)).pack(anchor="w")
+                           font=(FONT_UI, 10)).pack(anchor="w")
             tk.Label(row, text=item["description"], bg=PANEL, fg=MUTED,
-                     font=("Segoe UI", 9)).pack(anchor="w", padx=(27, 0), pady=(2, 0))
+                     font=(FONT_UI, 9)).pack(anchor="w", padx=(27, 0), pady=(2, 0))
         actions = tk.Frame(self.page_content, bg=BG)
         actions.pack(fill="x", padx=30)
         self._button(actions, "Appliquer la sélection", self.apply_selected).pack(side="left")
         self._button(actions, "Restaurer les valeurs sauvegardées", self.restore_settings, False).pack(side="left", padx=10)
         if not is_admin():
             tk.Label(self.page_content, text="Certaines actions nécessitent les droits administrateur.",
-                     fg=ORANGE, bg=BG, font=("Segoe UI", 9)).pack(anchor="w", padx=32, pady=12)
+                     fg=ORANGE, bg=BG, font=(FONT_UI, 9)).pack(anchor="w", padx=32, pady=12)
         recommendation = self._card(self.page_content, "Conseils selon ta configuration")
         recommendation.pack(fill="x", padx=30, pady=(16, 0))
         self.recommendation_label = tk.Label(
             recommendation,
             text="Lance le scan depuis Vue d'ensemble pour afficher des conseils liés au matériel détecté.",
-            bg=PANEL, fg=MUTED, font=("Segoe UI", 9), wraplength=850, justify="left",
+            bg=PANEL, fg=MUTED, font=(FONT_UI, 9), wraplength=850, justify="left",
         )
         self.recommendation_label.pack(anchor="w", padx=18, pady=(0, 15))
         self._update_recommendations()
@@ -831,7 +1097,7 @@ class DebloatCraftApp(tk.Tk):
         if not linux:
             self._button(bottom, "Ouvrir la désinstallation Windows", self.open_uninstall_settings).pack(side="left", padx=10)
         tk.Label(bottom, text="Inventaire en lecture seule" if linux else "Aucune suppression silencieuse", fg=GREEN, bg=PANEL,
-                 font=("Segoe UI", 9)).pack(side="right", padx=4)
+                 font=(FONT_UI, 9)).pack(side="right", padx=4)
         self.refresh_programs()
 
     def refresh_programs(self) -> None:
@@ -876,7 +1142,7 @@ class DebloatCraftApp(tk.Tk):
         if not linux:
             self._button(controls, "Appliquer à Windows", self.apply_windows_accent).pack(side="left", padx=10)
         self.accent_preview = tk.Label(controls, text="   Aperçu   ", bg=self.accent, fg=accent_text_color(self.accent),
-                                       font=("Segoe UI Semibold", 9), padx=10, pady=8)
+                                       font=(FONT_UI, 9), padx=10, pady=8)
         self.accent_preview.pack(side="right")
         note = self._card(self.page_content, "Réversible", "Les valeurs de couleur précédentes sont sauvegardées dans la configuration locale de DebloatCraft.")
         note.pack(fill="x", padx=30)
@@ -930,15 +1196,15 @@ class DebloatCraftApp(tk.Tk):
         left.pack(side="left", fill="both", expand=True, padx=(0, 12))
         self.profile_box = tk.Listbox(left, bg=PANEL_ALT, fg=TEXT, selectbackground="#303d66",
                                       selectforeground=TEXT, bd=0, highlightthickness=0,
-                                      font=("Segoe UI", 10), activestyle="none")
+                                      font=(FONT_UI, 10), activestyle="none")
         self.profile_box.pack(fill="both", expand=True, padx=16, pady=(0, 12))
         self.profile_box.bind("<<ListboxSelect>>", self._select_profile)
         right = self._card(layout, "Créer / appliquer")
         right.pack(side="left", fill="both", expand=True, padx=(12, 0))
         self.profile_name = tk.StringVar()
-        tk.Label(right, text="Nom du jeu", fg=MUTED, bg=PANEL, font=("Segoe UI", 9)).pack(anchor="w", padx=18)
+        tk.Label(right, text="Nom du jeu", fg=MUTED, bg=PANEL, font=(FONT_UI, 9)).pack(anchor="w", padx=18)
         tk.Entry(right, textvariable=self.profile_name, bg=PANEL_ALT, fg=TEXT, insertbackground=TEXT,
-                 relief="flat", font=("Segoe UI", 10)).pack(fill="x", padx=18, pady=(5, 16), ipady=8)
+                 relief="flat", font=(FONT_UI, 10)).pack(fill="x", padx=18, pady=(5, 16), ipady=8)
         palette = tk.Frame(right, bg=PANEL)
         palette.pack(anchor="w", padx=18, pady=(0, 16))
         for shade in PALETTE:
@@ -1030,13 +1296,13 @@ class DebloatCraftApp(tk.Tk):
             row = tk.Frame(card, bg=PANEL)
             row.pack(fill="x", padx=18, pady=(10, 4))
             tk.Label(row, text=question, fg=TEXT, bg=PANEL,
-                     font=("Segoe UI Semibold", 10)).pack(anchor="w")
+                     font=(FONT_UI, 10)).pack(anchor="w")
             answer = tk.StringVar(value=saved[index] if index < len(saved) else options[0])
             self.quiz_answers.append(answer)
             for option in options:
                 tk.Radiobutton(row, text=option, value=option, variable=answer, bg=PANEL, fg=MUTED,
                                activebackground=PANEL, activeforeground=TEXT, selectcolor=PANEL_ALT,
-                               font=("Segoe UI", 9)).pack(side="left", padx=(0, 18), pady=3)
+                               font=(FONT_UI, 9)).pack(side="left", padx=(0, 18), pady=3)
         self._button(card, "Voir mon thème", self.apply_quiz).pack(anchor="w", padx=18, pady=16)
 
     def apply_quiz(self) -> None:

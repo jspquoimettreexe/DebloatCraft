@@ -5,18 +5,19 @@ DebloatCraft est un outil gratuit pour Windows 10/11 et Linux x86-64. Il réunit
 ## Fonctionnalités
 
 - Scan local CPU, GPU, mémoire, version Windows et espace disque via PowerShell/CIM.
+- Moniteur de performances en temps réel: utilisation CPU, mémoire, GPU lorsque le pilote l'expose, espace disque et processus actifs.
 - Réglages de capture de jeu, applications en arrière-plan, effets visuels et priorités multimédia. Les valeurs précédentes sont sauvegardées dans `%APPDATA%\DebloatCraft\settings.json` et peuvent être restaurées depuis l'application.
 - Nettoyage avec prévisualisation de Temp utilisateur et caches Epic/Steam détectés. Les fichiers verrouillés sont ignorés; la suppression de fichiers ne peut pas être annulée.
 - Inventaire des applications Win32; la désinstallation est confiée aux paramètres Windows, sans exécuter de commande silencieuse depuis le registre.
 - Couleur d'accent Windows et profils de couleurs par jeu, appliqués manuellement. Aucun changement de couleur automatique au lancement des jeux.
 - Quiz de cinq questions pour choisir l'apparence de DebloatCraft.
-- Sous Linux: scan local CPU/GPU/mémoire/disques, inventaire de paquets dpkg/rpm/pacman et Flatpak, nettoyage manuel de certains caches utilisateur. Aucun réglage système Linux n'est appliqué.
+- Sous Linux: scan local CPU/GPU/mémoire/disques, moniteur de performances, inventaire de paquets dpkg/rpm/pacman et Flatpak, nettoyage manuel de certains caches utilisateur. Aucun réglage système Linux n'est appliqué.
 
 Le scan ne change rien. Aucun gain de FPS ou de latence n'est garanti. Les optimisations sont laissées au choix de la personne; les réglages TCP, les services système et la pagination du noyau ne sont pas modifiés.
 
 ## Tester sous Windows
 
-Lance `optimizer.py` avec Python 3.10+ et Tkinter sur Windows ou Linux. Pour les modifications HKLM, l'application Windows doit être exécutée comme administrateur. Les fonctions de scan et de personnalisation sont conçues pour rester locales.
+Lance `optimizer.py` avec Python 3.10+, Tkinter et `psutil` sur Windows ou Linux (`python -m pip install psutil`). Pour les modifications HKLM, l'application Windows doit être exécutée comme administrateur. Les fonctions de scan et de personnalisation sont conçues pour rester locales.
 
 ## Compiler le .exe
 
