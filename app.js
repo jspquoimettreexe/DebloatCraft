@@ -43,7 +43,7 @@ document.querySelectorAll("[data-installer-platform]").forEach((link) => {
   link.removeAttribute("tabindex");
   if (downloadState) {
     downloadState.textContent = isLinux
-      ? "Binaire Linux x86-64 autonome, téléchargement gratuit."
+      ? "Le binaire Linux n'est pas encore dans la release actuelle. Consulte la page des releases pour suivre sa publication."
       : "Téléchargement direct, gratuit. Windows demandera ton autorisation avant l'application.";
   }
 });
